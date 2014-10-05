@@ -295,6 +295,11 @@ void MusicLowlevelDescriptors::createNetworkEqLoud(SourceBase& source, Pool& poo
   peaks->output("magnitudes")   >> diss->input("magnitudes");
   diss->output("dissonance")    >> PC(pool, nameSpace + "dissonance");
 
+  // Spectral Entropy
+  Algorithm* ent = factory.create("Entropy");
+  spec->output("spectrum")  >> ent->input("array");
+  ent->output("entropy")    >> PC(pool, nameSpace + "spectral_entropy");
+
   // Spectral Contrast
   Algorithm* sc = factory.create("SpectralContrast",
                                  "frameSize", frameSize,

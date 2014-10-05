@@ -43,12 +43,20 @@ void MusicExtractor::compute(const string& audioFilename){
   // TODO: we still compute some low-level descriptors with equal loudness filter...
   // TODO: remove for consistency? evaluate on classification tasks?
 
+  cout << "Process step: Read metadata" << endl;
   readMetadata(audioFilename);
+
+  cout << "Process step: Compute md5 audio hash" << endl;
+  computeMD5(audioFilename);
+
+  cout << "Process step: Replay gain" << endl;
   computeReplayGain(audioFilename); // compute replay gain and the duration of the track
   
   if (endTime > results.value<Real>("metadata.audio_properties.length")) {
       endTime = results.value<Real>("metadata.audio_properties.length");
   }
+
+  cout << "Process step: Compute audio features" << endl;
 
   // normalize the audio with replay gain and compute as many lowlevel, rhythm,
   // and tonal descriptors as possible           
@@ -79,15 +87,6 @@ void MusicExtractor::compute(const string& audioFilename){
   // Descriptors that require values from other descriptors in the previous chain
   lowlevel->computeAverageLoudness(results);  // requires 'loudness'
   
-  // compute onset rate = len(onsets) / len(audio)
-  // we do not need onset times, as they are most probably incorrect, while onset_rate is more informative
-  results.set(rhythm->nameSpace + "onset_rate", results.value<vector<Real> >(rhythm->nameSpace + "onset_times").size()
-     / (Real) loader->output("audio").totalProduced()
-     * results.value<Real>("metadata.audio_properties.analysis_sample_rate"));
-  results.remove(rhythm->nameSpace + "onset_times");
-
-
-
   Algorithm* loader_2 = factory.create("EasyLoader",
                                        "filename",   audioFilename,
                                        "sampleRate", analysisSampleRate,
@@ -113,7 +112,7 @@ void MusicExtractor::compute(const string& audioFilename){
   results.set(tonal->nameSpace + "tuning_frequency", tuningFreq);
 
 
-  cout << "Compute Aggregation"<<endl; 
+  cout << "Process step: Compute aggregation"<<endl; 
   this->stats = this->computeAggregation(results);
 
   // pre-trained classifiers are only available in branches devoted for that 
@@ -171,8 +170,6 @@ Pool MusicExtractor::computeAggregation(Pool& pool){
   Pool poolStats;
   aggregator->input("input").set(pool);
   aggregator->output("output").set(poolStats);
-
-  cout << "Process step: Aggregation" << endl;
 
   aggregator->compute();
 
@@ -262,21 +259,30 @@ void MusicExtractor::readMetadata(const string& audioFilename) {
   //metadata->output("tagPool")     >> PC(results, "metadata.tags.all");  // currently not supported
   metadata->output("bitrate")     >> PC(results, "metadata.audio_properties.bitrate");
   metadata->output("channels")    >> PC(results, "metadata.audio_properties.channels");
-  metadata->output("duration")    >> NOWHERE; // let audio loader take care of this // TODO ???
-  metadata->output("sampleRate")  >> NOWHERE; // let the audio loader take care of this // TODO ???
-
+  // let audio loader take care of duration and samplerate because libtag can be wrong
+  metadata->output("duration")    >> NOWHERE; 
+  metadata->output("sampleRate")  >> NOWHERE;
   Network(metadata).run();
   */
 }
 
+void MusicExtractor::computeMD5(const string& audioFilename) {
+  AlgorithmFactory& factory = AlgorithmFactory::instance();
+  Algorithm* loader = factory.create("AudioLoader",
+                                     "filename",   audioFilename,
+                                     "computeMD5", true);
+  loader->output("audio")           >> NOWHERE;
+  loader->output("md5")             >> PC(results, "metadata.audio_properties.md5_encoded");
+  loader->output("sampleRate")      >> NOWHERE;
+  loader->output("numberChannels")  >> NOWHERE;
+
+  Network network(loader);
+  network.run();
+}
 
 void MusicExtractor::computeReplayGain(const string& audioFilename) {
 
-  // get metadata and compute replay gain
-
   AlgorithmFactory& factory = AlgorithmFactory::instance();
-
-  cout << "Process step: Replay Gain" << endl;
 
   replayGain = 0.0;
   int length = 0;
@@ -358,7 +364,7 @@ void MusicExtractor::outputToFile(Pool& pool, const string& outputFilename){
 
 
 void MusicExtractor::computeSVMDescriptors(Pool& pool) {
-  cout << "Process step 6: SVM Models" << endl;
+  cout << "Process step: SVM models" << endl;
   //const char* svmModels[] = {}; // leave this empty if you don't have any SVM models
   const char* svmModels[] = { "genre_tzanetakis", "genre_dortmund",
                               "genre_electronica", "genre_rosamerica",
@@ -459,4 +465,20 @@ void MusicExtractor::setExtractorDefaultOptions() {
     options.add("lowlevel.mfccStats", mfccStats[i]);
   for (int i=0; i<(int)gfccStats.size(); i++)
     options.add("lowlevel.gfccStats", gfccStats[i]);
+}
+
+void MusicExtractor::mergeValues() {
+  // NOTE: 
+  // - no check for if descriptors with the same names as the ones asked to 
+  //   merge exist already
+  // - all descriptors to be merged are expected to be strings
+  // TODO implement a method in Pool to detect the type of a descriptor given its name
+
+  string mergeKeyPrefix = "mergeValues";
+  vector<string> keys = options.descriptorNames(mergeKeyPrefix);
+
+  for (int i=0; i<(int) keys.size(); ++i) {
+    keys[i].replace(0, mergeKeyPrefix.size()+1, ""); 
+    results.set(keys[i], options.value<string>(mergeKeyPrefix + "." + keys[i]));
+  }
 }
